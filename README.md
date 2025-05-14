@@ -19,11 +19,19 @@
 * **API:** OpenGL 4.6
 
 ## Build with CMake
+**Windows**
 ```
 mkdir build
 cd build
 cmake ..
-cmake --build .
+cmake --build . -- /m:4
+```
+**Unix/Linux**
+```
+mkdir build
+cd build
+cmake ..
+cmake --build . -j4
 ```
 
 ## Libraries
