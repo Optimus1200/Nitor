@@ -17,7 +17,7 @@ namespace ntr
 		
 		return matrix;
 	}
-	
+
 	glm::mat4 Transform::matrixPosition() const
 	{
 		return glm::translate(glm::mat4(1.0f), position);
@@ -36,22 +36,5 @@ namespace ntr
 	glm::mat4 Transform::matrixScale() const
 	{
 		return glm::scale(glm::mat4(1.0f), scale);
-	}
-	
-	Transform Transform::operator+(const Transform& t) const
-	{
-		return Transform {
-			position + t.position,
-			rotation + t.rotation,
-			scale * t.scale
-		};
-	}
-
-	Transform& Transform::operator+=(const Transform& t)
-	{
-		position += t.position;
-		rotation += t.rotation;
-		scale *= t.scale;
-		return *this;
 	}
 } // namespace ntr

@@ -80,6 +80,8 @@ FetchContent_MakeAvailable(stb)
 
 # =================== Source Files ===================
 file(GLOB_RECURSE NITOR_SRC CONFIGURE_DEPENDS
+    ${NITOR_SOURCE_DIR}/include/*.h
+    ${NITOR_SOURCE_DIR}/include/*.hpp
 	${NITOR_SOURCE_DIR}/src/*.cpp
 	${NITOR_SOURCE_DIR}/src/*.hpp
 	${NITOR_SOURCE_DIR}/src/*.c

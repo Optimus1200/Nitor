@@ -1,4 +1,5 @@
 #include <iostream>
+#include <stack>
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/matrix_decompose.hpp>
@@ -116,7 +117,7 @@ namespace ntr
     Model* Scene::loadModel(const std::string& id, const std::filesystem::path& filepath)
     {
         Assimp::Importer importer;
-        const aiScene* SCENE = importer.ReadFile(filepath.string().c_str(), aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_FlipUVs | aiProcess_CalcTangentSpace);
+        const aiScene* SCENE = importer.ReadFile(filepath.string().c_str(), aiProcess_Triangulate | aiProcess_GenNormals | aiProcess_FlipUVs | aiProcess_CalcTangentSpace | aiProcess_ImproveCacheLocality);
 
         if (!SCENE || SCENE->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !SCENE->mRootNode)
         {
@@ -130,9 +131,9 @@ namespace ntr
             return Model::EMPTY;
         }
 
-        Model* model = new Model();
+        std::unordered_set<std::filesystem::path> fileCache;
 
-        processModelRecursive(filepath, model, id, SCENE->mRootNode, SCENE);
+        Model* model = processModel(filepath, SCENE->mRootNode, SCENE);
 
         mMapModels.emplace(id, model);
         mRmapModels.emplace(model, id);
@@ -524,119 +525,99 @@ namespace ntr
             }
         }
     }
-    
-    void Scene::processModelRecursive(const std::filesystem::path& modelPath, Model* ntr_model, const std::string& id, const aiNode* ai_node, const aiScene* ai_scene)
+
+    Model* Scene::processModel(const std::filesystem::path& modelPath, const aiNode* ai_node, const aiScene* ai_scene)
     {
-        size_t numMeshes = ai_node->mNumMeshes;
+        Model* model = new Model();
 
-        // load meshes in the current scene node and store them in the model
+        AssetCache assetCache;
 
-        for (size_t i = 0; i < numMeshes; ++i)
+        std::stack<const aiNode*> nodeStack;
+        nodeStack.push(ai_node);
+
+        while (!nodeStack.empty())
         {
-            // process mesh data
+            const aiNode* currentNode = nodeStack.top();
+            nodeStack.pop();
 
-            aiMesh* ai_mesh = ai_scene->mMeshes[ai_node->mMeshes[i]];
+            // Process child nodes
+
+            Transform meshTransform = processMeshTransform(currentNode, ai_scene);
             
-            Mesh* mesh = processMesh(ai_mesh, id, ai_scene);
+            size_t numMeshes = currentNode->mNumMeshes;
 
-            std::string meshID = findMeshID(mesh);
-
-            aiMaterial* ai_mesh_material = ai_scene->mMaterials[ai_mesh->mMaterialIndex];
-
-            // handle duplicate material name, then add material
-            
-            std::string materialIDToUse = std::string(ai_node->mName.C_Str()) + " - " + ai_mesh->mName.C_Str() + " - " + ai_mesh_material->GetName().C_Str();
-
-            while (findMaterial(materialIDToUse) != Material::EMPTY)
+            for (size_t i = 0; i < numMeshes; ++i)
             {
-                materialIDToUse += "+";
-            }
+                aiMesh* ai_mesh = ai_scene->mMeshes[currentNode->mMeshes[i]];
 
-            // process material and textures, then add them to mesh instance
-            
-            TextureHandle mapAlbedo = processMaterialTexture(modelPath, ai_mesh_material, aiTextureType_DIFFUSE);
-            TextureHandle mapNormal = processMaterialTexture(modelPath, ai_mesh_material, aiTextureType_NORMALS);
-            TextureHandle mapRoughness = processMaterialTexture(modelPath, ai_mesh_material, aiTextureType_DIFFUSE_ROUGHNESS);
-            TextureHandle mapMetallic = processMaterialTexture(modelPath, ai_mesh_material, aiTextureType_METALNESS);
-            TextureHandle mapAO = processMaterialTexture(modelPath, ai_mesh_material, aiTextureType_AMBIENT_OCCLUSION);
+                Mesh*       mesh            = processMesh(ai_mesh, ai_scene, assetCache);
+                Material*   meshMaterial    = processMeshMaterial(modelPath, ai_mesh, currentNode, ai_scene, assetCache);
+                std::string meshID          = findMeshID(mesh);
 
-            Material* ntr_material;
-            bool sameAsDefaultMaterial = true;
+                // Handle duplicate mesh id in model
 
-            if (mapAlbedo == Texture::EMPTY)
-            {
-                mapAlbedo = M_DEFAULT_TEXTURE_ALBEDO.handle();
-            }
-            else
-            {
-                sameAsDefaultMaterial = false;
-            }
-            
-            if (mapNormal == Texture::EMPTY)
-            {
-                mapNormal = M_DEFAULT_TEXTURE_NORMAL.handle();   
-            }
-            else
-            {
-                sameAsDefaultMaterial = false;
+                while (model->meshes.find(meshID) != model->meshes.end())
+                {
+                    meshID += "+";
+                }
+
+                // Create model
+
+                model->meshes.try_emplace(meshID, mesh, meshMaterial, meshTransform).first->second;
             }
 
-            if (mapRoughness == Texture::EMPTY)
-            {
-                mapRoughness = M_DEFAULT_TEXTURE_ROUGHNESS.handle();
-            }
-            else
-            {
-                sameAsDefaultMaterial = false;
-            }
-            
-            if (mapMetallic == Texture::EMPTY)
-            {
-                mapMetallic = M_DEFAULT_TEXTURE_METALLIC.handle();
-            }
-            else
-            {
-                sameAsDefaultMaterial = false;
-            }
-            
-            if (mapAO == Texture::EMPTY)
-            {
-                mapAO = M_DEFAULT_TEXTURE_OCCLUSION.handle();
-            }
-            else
-            {
-                sameAsDefaultMaterial = false;
-            }
+            // push children in nodeStack in reverse to maintain original processing order
 
-            if (sameAsDefaultMaterial)
-            {
-                ntr_material = M_DEFAULT_MATERIAL;
-            }
-            else
-            {
-                ntr_material = addMaterial(materialIDToUse, {});
-                ntr_material->albedo = mapAlbedo;
-                ntr_material->normal = mapNormal;
-                ntr_material->roughness = mapRoughness;
-                ntr_material->metallic = mapMetallic;
-                ntr_material->occlusion = mapAO;
-            }
+            int numChildMeshes = (int)currentNode->mNumChildren;
 
-            // create the mesh instance
-
-            MeshInstance& ntr_mesh_instance = ntr_model->meshes.try_emplace(meshID, mesh, ntr_material, Transform{}).first->second;
+            for (int i = numChildMeshes - 1; i >= 0; --i)
+            {
+                nodeStack.push(currentNode->mChildren[i]);
+            }
         }
 
-        // Process the current aiNode's child nodes
-        
-        for (size_t i = 0; i < ai_node->mNumChildren; ++i)
-        {
-            processModelRecursive(modelPath, ntr_model, id, ai_node->mChildren[i], ai_scene);
-        }
+        return model;
     }
 
     // Creates the ntr::Mesh from the aiMesh, and returns a pointer to the Mesh
-    Mesh* Scene::processMesh(const aiMesh* ai_mesh, const std::string& modelName, const aiScene* ai_scene)
+    Mesh* Scene::processMesh(const aiMesh* ai_mesh, const aiScene* ai_scene, AssetCache& assetCache)
+    {
+        // Reuse mesh if it already exists
+
+        auto itr = assetCache.meshes.find(ai_mesh);
+
+        if (itr != assetCache.meshes.end())
+        {
+            return itr->second;
+        }
+
+        // New mesh: handle duplicate mesh name in map
+
+        std::string meshName = ai_mesh->mName.C_Str();
+
+        std::string idToUse = meshName;
+        
+        while (mMapMeshes.find(idToUse) != mMapMeshes.end())
+        {
+            idToUse += "+";
+        }
+
+        // Create and store mesh in map
+
+        auto [vertices, indices] = processMeshVerticesAndIndices(ai_mesh);
+
+        Mesh* mesh = new Mesh(std::move(vertices), std::move(indices));
+
+        mMapMeshes.emplace(idToUse, mesh);
+        mRmapMeshes.emplace(mesh->vao(), idToUse);
+
+        // Record mesh in cache for reuse
+        assetCache.meshes.try_emplace(ai_mesh, mesh);
+
+        return mesh;
+    }
+
+    std::pair<std::vector<Vertex>, std::vector<GLuint>> Scene::processMeshVerticesAndIndices(const aiMesh* ai_mesh)
     {
         std::vector<Vertex> vertices;
         std::vector<GLuint> indices;
@@ -695,7 +676,7 @@ namespace ntr
         // Process each mesh face
 
         const size_t NUM_FACES = ai_mesh->mNumFaces;
-        
+
         for (size_t i = 0; i < NUM_FACES; ++i)
         {
             const aiFace& FACE = ai_mesh->mFaces[i];
@@ -711,26 +692,143 @@ namespace ntr
             }
         }
 
-        // Handle duplicate mesh name in map
-
-        std::string meshID = ai_mesh->mName.C_Str();
-        
-        while (mMapMeshes.find(meshID) != mMapMeshes.end())
-        {
-            meshID += "+";
-        }
-
-        // Create and store mesh in map
-
-        Mesh* mesh = new Mesh(std::move(vertices), std::move(indices));
-
-        mMapMeshes.emplace(meshID, mesh);
-        mRmapMeshes.emplace(mesh->vao(), meshID);
-
-        return mesh;
+        return { vertices, indices };
     }
 
-    TextureHandle Scene::processMaterialTexture(const std::filesystem::path& modelPath, const aiMaterial* ai_material, aiTextureType ai_texture_type, unsigned int index)
+    Material* Scene::processMeshMaterial
+    (
+        const std::filesystem::path& modelPath, 
+        const aiMesh* ai_mesh, 
+        const aiNode* ai_node,
+        const aiScene* ai_scene, 
+        AssetCache& assetCache
+    )
+    {
+        aiMaterial* ai_mesh_material = ai_scene->mMaterials[ai_mesh->mMaterialIndex];
+
+        // Reuse material if it already exists
+
+        std::string materialName = ai_mesh_material->GetName().C_Str();
+
+        auto itr = assetCache.materials.find(materialName);
+
+        if (itr != assetCache.materials.end())
+        {
+            return itr->second;
+        }
+
+        // New material: handle duplicate material name, then add material
+
+        std::string materialIDToUse = std::string(ai_node->mName.C_Str()) + " - " + ai_mesh->mName.C_Str() + " - " + materialName;
+
+        while (findMaterial(materialIDToUse) != Material::EMPTY)
+        {
+            materialIDToUse += "+";
+        }
+
+        // process material and textures, then add them to mesh instance
+
+        TextureHandle mapAlbedo = processMaterialTexture(modelPath, ai_mesh_material, aiTextureType_DIFFUSE, 0, assetCache);
+        TextureHandle mapNormal = processMaterialTexture(modelPath, ai_mesh_material, aiTextureType_NORMALS, 0, assetCache);
+        TextureHandle mapRoughness = processMaterialTexture(modelPath, ai_mesh_material, aiTextureType_DIFFUSE_ROUGHNESS, 0, assetCache);
+        TextureHandle mapMetallic = processMaterialTexture(modelPath, ai_mesh_material, aiTextureType_METALNESS, 0, assetCache);
+        TextureHandle mapAO = processMaterialTexture(modelPath, ai_mesh_material, aiTextureType_AMBIENT_OCCLUSION, 0, assetCache);
+
+        Material* ntr_material;
+        bool sameAsDefaultMaterial = true;
+
+        if (mapAlbedo == Texture::EMPTY)
+        {
+            mapAlbedo = M_DEFAULT_TEXTURE_ALBEDO.handle();
+        }
+        else
+        {
+            sameAsDefaultMaterial = false;
+        }
+
+        if (mapNormal == Texture::EMPTY)
+        {
+            mapNormal = M_DEFAULT_TEXTURE_NORMAL.handle();
+        }
+        else
+        {
+            sameAsDefaultMaterial = false;
+        }
+
+        if (mapRoughness == Texture::EMPTY)
+        {
+            mapRoughness = M_DEFAULT_TEXTURE_ROUGHNESS.handle();
+        }
+        else
+        {
+            sameAsDefaultMaterial = false;
+        }
+
+        if (mapMetallic == Texture::EMPTY)
+        {
+            mapMetallic = M_DEFAULT_TEXTURE_METALLIC.handle();
+        }
+        else
+        {
+            sameAsDefaultMaterial = false;
+        }
+
+        if (mapAO == Texture::EMPTY)
+        {
+            mapAO = M_DEFAULT_TEXTURE_OCCLUSION.handle();
+        }
+        else
+        {
+            sameAsDefaultMaterial = false;
+        }
+
+        if (sameAsDefaultMaterial)
+        {
+            ntr_material = M_DEFAULT_MATERIAL;
+        }
+        else
+        {
+            ntr_material = addMaterial(materialIDToUse, {});
+            ntr_material->albedo = mapAlbedo;
+            ntr_material->normal = mapNormal;
+            ntr_material->roughness = mapRoughness;
+            ntr_material->metallic = mapMetallic;
+            ntr_material->occlusion = mapAO;
+        }
+
+        // Record material in cache for reuse
+        assetCache.materials.emplace(materialName, ntr_material);
+
+        return ntr_material;
+    }
+
+    Transform Scene::processMeshTransform(const aiNode* ai_node, const aiScene* ai_scene)
+    {
+        aiVector3D ai_pos, ai_scl, ai_rot;
+        ai_node->mTransformation.Decompose(ai_scl, ai_rot, ai_pos);
+
+        Transform ntr_transform;
+        ntr_transform.position.x = ai_pos.x;
+        ntr_transform.position.y = ai_pos.y;
+        ntr_transform.position.z = ai_pos.z;
+        ntr_transform.rotation.x = glm::degrees(ai_rot.x);
+        ntr_transform.rotation.y = glm::degrees(ai_rot.y);
+        ntr_transform.rotation.z = glm::degrees(ai_rot.z);
+        ntr_transform.scale.x = ai_scl.x;
+        ntr_transform.scale.y = ai_scl.y;
+        ntr_transform.scale.z = ai_scl.z;
+
+        return ntr_transform;
+    }
+
+    TextureHandle Scene::processMaterialTexture
+    (
+        const std::filesystem::path& modelPath, 
+        const aiMaterial* ai_material, 
+        aiTextureType ai_texture_type, 
+        unsigned int index, 
+        AssetCache& assetCache
+    )
     {
         aiString ai_texture_path;
         
@@ -741,18 +839,30 @@ namespace ntr
 
         std::filesystem::path texturePath = modelPath.parent_path().append(ai_texture_path.C_Str());
 
-        // Check if texture already loaded
+        // Reuse texture if already loaded
 
-        TextureHandle textureHandle = findTexture(texturePath.filename().string());
+        auto itr = assetCache.textures.find(texturePath);
 
-        if (textureHandle != Texture::EMPTY)
+        if (itr != assetCache.textures.end())
         {
-            return textureHandle;
+            return itr->second;
         }
 
-        // Load texture if not loaded
+        // Load texture if not loaded, handle duplicate id, record in cache for reuse
 
-        return loadTexture(texturePath.filename().string(), texturePath);
+        std::string idToUse = texturePath.filename().string();
+
+        while (findTexture(idToUse) != Texture::EMPTY)
+        {
+            idToUse += "+";
+        }
+
+        TextureHandle handle = loadTexture(idToUse, texturePath);
+
+        // Record texture in cache for reuse
+        assetCache.textures.emplace(texturePath, handle);
+
+        return handle;
     }
 
     Transform Scene::toTransform(const aiMatrix4x4& matrix)
@@ -765,7 +875,6 @@ namespace ntr
             for (uint32_t col = 0; col < 3; ++col)
             {
                 transformMatrix[row][col] = matrix[row][col];
-
             }
         }
 

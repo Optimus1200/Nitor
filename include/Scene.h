@@ -111,6 +111,13 @@ namespace ntr
 
 	private:
 
+		struct AssetCache
+		{
+			std::unordered_map<const aiMesh*, Mesh*> meshes;
+			std::unordered_map<std::filesystem::path, TextureHandle> textures;
+			std::unordered_map<std::filesystem::path, Material*> materials;
+		};
+
 		const Texture					M_DEFAULT_TEXTURE_ALBEDO;
 		const Texture					M_DEFAULT_TEXTURE_NORMAL;
 		const Texture					M_DEFAULT_TEXTURE_ROUGHNESS;
@@ -130,9 +137,12 @@ namespace ntr
 
 		void			processCameras(const aiScene* scene);
 		void			processLights(const aiScene* scene);
-		void			processModelRecursive(const std::filesystem::path& modelPath, Model* ntr_model, const std::string& id, const aiNode* ai_node, const aiScene* ai_scene);
-		Mesh*			processMesh(const aiMesh* ai_mesh, const std::string& modelName, const aiScene* ai_scene);
-		TextureHandle	processMaterialTexture(const std::filesystem::path& modelPath, const aiMaterial* ai_material, aiTextureType ai_texture_type, unsigned int index = 0);
+		Model*			processModel(const std::filesystem::path& modelPath, const aiNode* ai_node, const aiScene* ai_scene);
+		Mesh*			processMesh(const aiMesh* ai_mesh, const aiScene* ai_scene, AssetCache& assetCache);
+		std::pair<std::vector<Vertex>, std::vector<GLuint>> processMeshVerticesAndIndices(const aiMesh* ai_mesh);
+		Material*		processMeshMaterial(const std::filesystem::path& modelPath, const aiMesh* ai_mesh, const aiNode* ai_node, const aiScene* ai_scene, AssetCache& assetCache);
+		Transform		processMeshTransform(const aiNode* ai_node, const aiScene* ai_scene);
+		TextureHandle	processMaterialTexture(const std::filesystem::path& modelPath, const aiMaterial* ai_material, aiTextureType ai_texture_type, unsigned int index, AssetCache& assetCache);
 		Transform		toTransform(const aiMatrix4x4& matrix);
 	};
 	

@@ -17,6 +17,7 @@ out vec3 FragPos;
 uniform mat4 projection;
 uniform mat4 view;
 uniform mat4 model;
+uniform mat3 normal;
 
 uniform bool instancing = false;
 
@@ -26,7 +27,8 @@ void main()
 
     TexCoords   = aTexCoords;
     WorldPos    = vec3(effectiveModel * vec4(aPos, 1.0));
-    Normal      = transpose(inverse(mat3(effectiveModel))) * aNormal;
+    //Normal      = transpose(inverse(mat3(effectiveModel))) * aNormal;
+    Normal = normal * aNormal;
 
     FragPos     = vec3(effectiveModel * vec4(aPos, 1.0));
 

@@ -331,9 +331,6 @@ namespace ntr
 	entt::entity App::addEntityModel3D(const std::string& id, const Model* model, const Transform& transform)
 	{
 		static unsigned int entNum = 0;
-
-		entt::entity ent = mScene.registry.create();
-
 		std::string idToUse = "";
 
 		if (id == "")
@@ -345,6 +342,32 @@ namespace ntr
 			idToUse = id;
 		}
 
+		// handle duplicate id
+
+		auto entityView = mScene.registry.view<StringID>();
+		bool duplicateFound;
+
+		do
+		{
+			duplicateFound = false;
+
+			for (auto& [ent, id] : entityView.each())
+			{
+				if (idToUse == id.str)
+				{
+					duplicateFound = true;
+					break;
+				}
+			}
+
+			if (duplicateFound)
+			{
+				idToUse += "+";
+			}
+		} while (duplicateFound);
+
+		// create entity
+		entt::entity ent = mScene.registry.create();
 		mScene.registry.emplace<StringID>(ent, idToUse);
 		mScene.registry.emplace<ConstPointer<Model>>(ent, model);
 		mScene.registry.emplace<Transform>(ent, transform);
@@ -466,11 +489,13 @@ namespace ntr
 
 		for (const auto& [entity, model, transform] : entityView.each())
 		{
+			glm::mat4 modelMatrix = transform.matrix();
+
 			const auto& meshes = model->meshes;
 
 			for (const auto& [id, mesh] : meshes)
 			{
-				mShaderDepth.setMat4("model", (mesh.transform + transform).matrix());
+				mShaderDepth.setMat4("model", modelMatrix * mesh.transform.matrix());
 				mShaderDepth.draw(mesh);
 			}
 		}
@@ -486,11 +511,17 @@ namespace ntr
 
 	void App::renderModelPBR(const Model* model, const Transform& transform)
 	{
+		glm::mat4 modelMatrix = transform.matrix();
+
 		const auto& meshes = model->meshes;
 
 		for (const auto& [id, mesh] : meshes)
 		{
-			mShaderPBR.setMat4("model", (mesh.transform + transform).matrix());
+			glm::mat4 finalMatrix = modelMatrix * mesh.transform.matrix();
+
+			mShaderPBR.setMat4("model", finalMatrix);
+			mShaderPBR.setMat3("normal", glm::transpose(glm::inverse(glm::mat3(finalMatrix))));
+			
 			mShaderPBR.bindTexture(0, "material.albedo",    mesh.material->albedo);
 			mShaderPBR.bindTexture(1, "material.normal",    mesh.material->normal);
 			mShaderPBR.bindTexture(2, "material.roughness", mesh.material->roughness);
@@ -1246,6 +1277,9 @@ namespace ntr
 
 		if (ImGui::CollapsingHeader("Entities"))
 		{
+			static bool showRenameError = false;
+			static std::string duplicateID = "";
+
 			auto entityView = mScene.registry.view<StringID>();
 
 			for (auto [entity, id] : entityView.each())
@@ -1271,17 +1305,37 @@ namespace ntr
 			{
 				entityDeselected = entitySelected;
 				entitySelected = entt::null;
+				showRenameError = false;
 			}
 			else if (selectedResult.shouldDelete && entitySelected != entt::null)
 			{
 				mScene.registry.destroy(entitySelected);
 				entityDeselected = entt::null;
 				entitySelected = entt::null;
+				showRenameError = false;
 			}
 			else if (selectedResult.shouldRename && entitySelected != entt::null)
 			{
-				StringID& id = mScene.registry.get<StringID>(entitySelected);
-				id.str = selectedResult.newName;
+				for (auto [entity, id] : entityView.each())
+				{
+					if (id.str == selectedResult.newName)
+					{
+						showRenameError = true;
+						duplicateID = selectedResult.newName;
+						break;
+					}
+				}
+
+				if (!showRenameError)
+				{
+					StringID& id = mScene.registry.get<StringID>(entitySelected);
+					id.str = selectedResult.newName;
+				}
+			}
+
+			if (showRenameError)
+			{
+				Gui::showErrorTooltip("Entity ID \'" + duplicateID + "\' already exists!");
 			}
 		}
 		
@@ -1309,11 +1363,15 @@ namespace ntr
 			mShaderStencil.setMat4("projection", mScene.selectedCamera.projection());
 			mShaderStencil.setFloat("outlineThickness", 50.0f);
 
+			glm::mat4 modelMatrix = transform.matrix();
+
 			const auto& meshes = model->meshes;
 
 			for (const auto& [id, mesh] : meshes)
 			{
-				mShaderStencil.setMat4("model", (transform + mesh.transform).matrix());
+
+				mShaderStencil.setMat4("model", modelMatrix * mesh.transform.matrix());
+				
 				mShaderStencil.draw(mesh);
 			}
 
