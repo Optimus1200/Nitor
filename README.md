@@ -1,6 +1,7 @@
 # Nitor - OpenGL 3D Graphics Engine
 
 ![Image](https://raw.githubusercontent.com/Optimus1200/Images/main/nitor_preview.png)
+Model: https://sketchfab.com/3d-models/riot-mech-model-7b8738c8b0ed4561814856503a4642fb
 
 ## Features
 * **Physically-Based Rendering (PBR)**
